@@ -1,7 +1,10 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 import os.path as osp
+import os
+import json
 import warnings
 from typing import Optional, Sequence
+import numpy as np
 
 import mmcv
 from mmengine.fileio import get
@@ -14,6 +17,31 @@ from mmdet.datasets.samplers import TrackImgSampler
 from mmdet.registry import HOOKS
 from mmdet.structures import DetDataSample, TrackDataSample
 
+class ClassCounter:
+    def __init__(self, classes):
+        self.classes = classes
+        self.gt_counts = {class_label: np.array([]) for class_label in classes}
+        self.pred_counts = {class_label: np.array([]) for class_label in classes}
+
+    def add_ground_truth(self, class_label, count):
+        self.gt_counts[class_label] = np.append(self.gt_counts[class_label], count)
+
+    def add_prediction(self, class_label, count):
+        self.pred_counts[class_label] = np.append(self.pred_counts[class_label], count)
+
+    def mean_absolute_error(self):
+        mae_per_class = {
+            class_label: np.mean(np.abs(self.pred_counts[class_label] - self.gt_counts[class_label]))
+            for class_label in self.classes
+        }
+        return mae_per_class
+
+    def root_mean_squared_error(self):
+        rmse_per_class = {
+            class_label: np.sqrt(np.mean((self.pred_counts[class_label] - self.gt_counts[class_label])**2))
+            for class_label in self.classes
+        }
+        return rmse_per_class
 
 @HOOKS.register_module()
 class DetVisualizationHook(Hook):
@@ -105,6 +133,7 @@ class DetVisualizationHook(Hook):
                 wait_time=self.wait_time,
                 pred_score_thr=self.score_thr,
                 step=total_curr_iter)
+        
 
     def after_test_iter(self, runner: Runner, batch_idx: int, data_batch: dict,
                         outputs: Sequence[DetDataSample]) -> None:
@@ -124,6 +153,10 @@ class DetVisualizationHook(Hook):
             self.test_out_dir = osp.join(runner.work_dir, runner.timestamp,
                                          self.test_out_dir)
             mkdir_or_exist(self.test_out_dir)
+
+        classes = ('Abnormal', 'Flower', 'Ripe', 'Underripe', 'Unripe')
+
+        class_counter = ClassCounter(classes)
 
         for data_sample in outputs:
             self._test_index += 1
@@ -146,6 +179,88 @@ class DetVisualizationHook(Hook):
                 pred_score_thr=self.score_thr,
                 out_file=out_file,
                 step=self._test_index)
+            
+            # classes = self.dataset_meta.get('classes', None)
+            
+            output_filename = f"{out_file}.json"
+            classes = ('Abnormal', 'Flower', 'Ripe', 'Underripe', 'Unripe')
+
+            # Helper function to process instances
+            def process_instances(instances, score_thr):
+                if instances is not None and hasattr(instances, 'bboxes'):
+                    filtered_instances = instances[instances.scores > score_thr] if hasattr(instances, 'scores') else instances
+                    total_box = filtered_instances.bboxes
+                    box_positions = total_box[:, :2]
+                    labels = filtered_instances.labels
+                    return total_box, box_positions, labels
+                else:
+                    return 0, 0, None
+
+            # Process ground truth instances
+            total_gt_box, gt_box_positions, gt_labels = process_instances(getattr(data_sample, 'gt_instances', None), self.score_thr)
+
+            # Process predicted instances
+            total_pred_box, pred_box_positions, pred_labels = process_instances(getattr(data_sample, 'pred_instances', None), self.score_thr)
+
+            # Initialize dictionaries using dict.fromkeys
+            gt_class_quantity_dict = dict.fromkeys(classes, 0)
+            pred_class_quantity_dict = dict.fromkeys(classes, 0)
+
+            output_data = {
+                "Score Thr": self.score_thr,
+                "Ground Truth": {},
+                "Prediction": {}
+            }
+
+            for data, class_quantity_dict in zip([(total_gt_box, gt_labels), (total_pred_box, pred_labels)],
+                                    [gt_class_quantity_dict, pred_class_quantity_dict]):
+                for pos, label in zip(*data):
+                    if 0 <= label < len(classes):
+                        class_name = classes[label]
+                        class_quantity_dict[class_name] += 1
+
+                # Update the output_data dictionary
+                section_name = "Ground Truth" if class_quantity_dict is gt_class_quantity_dict else "Prediction"
+                output_data[section_name] = {class_label: class_quantity_dict[class_label] for class_label in classes}
+
+            # Write the data to a JSON file
+            with open(output_filename, 'w') as f:
+                json.dump(output_data, f, indent=2)
+
+            # with open(output_filename, 'w') as f:
+            #     f.write(f"Score Thr: {self.score_thr}\n")
+
+            #     # Combine the loops for ground truth and prediction
+            #     for data, class_quantity_dict in zip([(total_gt_box, gt_labels), (total_pred_box, pred_labels)],
+            #                                         [gt_class_quantity_dict, pred_class_quantity_dict]):
+            #         for pos, label in zip(*data):
+            #             if 0 <= label < len(classes):
+            #                 class_name = classes[label]
+            #                 class_quantity_dict[class_name] += 1
+
+            #         # Write the results for ground truth and prediction
+            #         section_name = "Ground Truth" if class_quantity_dict is gt_class_quantity_dict else "Prediction"
+            #         f.write(f"\n{section_name}\n")
+            #         # f.write(f"\n{section_name}\n")
+                    
+            #         for class_label in classes:
+            #             if class_quantity_dict is gt_class_quantity_dict:
+            #                 class_counter.add_ground_truth(class_label, class_quantity_dict[class_label])
+            #             else:
+            #                 class_counter.add_prediction(class_label, class_quantity_dict[class_label])
+            #             f.write(f"Class {class_label}: {class_quantity_dict[class_label]}\n")
+
+
+        # output_all_res = f"{self.test_out_dir}/res_all"
+        # os.makedirs(output_all_res)
+        # output_filename_res = f"{output_all_res}/res.txt"
+
+        # with open(output_filename_res, 'w') as f:
+        #     f.write("MAE:\n")
+        #     f.write(str(class_counter.mean_absolute_error()))
+        #     f.write("\nRMSE:\n")
+        #     f.write(str(class_counter.root_mean_squared_error()))
+        
 
 
 @HOOKS.register_module()

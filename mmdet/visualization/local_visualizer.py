@@ -1,6 +1,6 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 from typing import Dict, List, Optional, Tuple, Union
-
+import logging
 import cv2
 import mmcv
 import numpy as np
@@ -13,6 +13,7 @@ import torch
 from mmengine.dist import master_only
 from mmengine.structures import InstanceData, PixelData
 from mmengine.visualization import Visualizer
+from mmengine.logging import MessageHub, MMLogger, print_log
 
 from ..evaluation import INSTANCE_OFFSET
 from ..registry import VISUALIZERS
@@ -140,6 +141,11 @@ class DetLocalVisualizer(Visualizer):
                 edge_colors=colors,
                 alpha=self.alpha,
                 line_widths=self.line_width)
+            
+            print_log(
+                'test test etst',
+                logger='current',
+                level=logging.WARNING)
 
             positions = bboxes[:, :2] + self.line_width
             areas = (bboxes[:, 3] - bboxes[:, 1]) * (
@@ -167,6 +173,35 @@ class DetLocalVisualizer(Visualizer):
                         'pad': 0.7,
                         'edgecolor': 'none'
                     }])
+                
+            # raise ValueError("Intentional exception for index 2")
+
+            positions = bboxes[:, :2] + 15
+            areas = (bboxes[:, 3] - bboxes[:, 1]) * (
+                bboxes[:, 2] - bboxes[:, 0])
+            scales = _get_adaptive_scales(areas)
+
+            for i, (pos, label) in enumerate(zip(positions, labels)):
+                if 'label_names' in instances:
+                    label_text = instances.label_names[i]
+                else:
+                    label_text = classes[
+                        label] if classes is not None else f'class {label}'
+                if 'scores' in instances:
+                    score = round(float(instances.scores[i]) * 100, 1)
+                    label_text += f': {score}'
+
+                self.draw_texts(
+                    str(len(positions)),
+                    pos,
+                    colors=text_colors[i],
+                    font_sizes=int(13 * scales[i]),
+                    bboxes=[{
+                        'facecolor': 'black',
+                        'alpha': 0.8,
+                        'pad': 0.7,
+                        'edgecolor': 'black'
+                    }])                
 
         if 'masks' in instances:
             labels = instances.labels
